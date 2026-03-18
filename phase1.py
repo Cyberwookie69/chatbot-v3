@@ -793,8 +793,13 @@ def stage1_load_corpus(cfg: dict) -> List[Dict]:
 
     try:
         return _stage1_duckdb(largest)
-    except ImportError:
-        print("  DuckDB not available — falling back to csv.DictReader")
+    except (ImportError, Exception) as e:
+        if "OutOfMemory" in type(e).__name__ or "OutOfMemory" in str(e):
+            print(f"  DuckDB out of memory — falling back to csv.DictReader")
+        elif isinstance(e, ImportError):
+            print("  DuckDB not available — falling back to csv.DictReader")
+        else:
+            print(f"  DuckDB failed ({e}) — falling back to csv.DictReader")
         return _stage1_csv(cfg, csv_files)
 
 
