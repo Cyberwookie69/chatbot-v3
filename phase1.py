@@ -692,11 +692,50 @@ def _filter_dialogue(dlg: Dict, cfg: dict) -> Tuple[Optional[Dict], str]:
 
 # ── Stage 0: Kaggle download ──────────────────────────────────────────────────
 
-KAGGLE_DATASET = "rtatman/ubuntu-dialogue-corpus"
+# Each entry: (kaggle_slug, local_subdir_name)
+KAGGLE_DATASETS = [
+    ("rtatman/ubuntu-dialogue-corpus",                                "Ubuntu-dialogue-corpus"),
+    ("saurabhshahane/wikiqa-corpus",                                  "wikiqa-corpus"),
+    ("rtatman/questionanswer-dataset",                                "question-answer-dataset"),
+    ("jeromeblanchet/conversational-question-answering-dataset-coqa", "coqa"),
+    ("shadimsadiq/english-movie-subtitle-dataset",                    "english-movie-subtitles"),
+    ("Cornell-University/movie-dialog-corpus",                        "movie-dialog-corpus"),
+]
+
+
+def _kaggle_download(slug: str, dest_dir: Path) -> None:
+    """Download a single Kaggle dataset to dest_dir (API or CLI)."""
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+        print(f"  Downloading {slug} → {dest_dir} …")
+        api.dataset_download_files(slug, path=str(dest_dir), unzip=True)
+    except ImportError:
+        print("  kaggle package not installed — trying kaggle CLI …")
+        try:
+            subprocess.run(
+                ["kaggle", "datasets", "download", "-d", slug,
+                 "-p", str(dest_dir), "--unzip"],
+                check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "Could not download corpus: install the kaggle package "
+                "(pip install kaggle) or ensure the kaggle CLI is on PATH."
+            )
 
 
 def stage0_download_corpus(cfg: dict) -> None:
-    """Download Ubuntu Dialogue Corpus from Kaggle if not already present.
+    """Download all training corpora from Kaggle if not already present.
+
+    Downloads:
+      - Ubuntu Dialogue Corpus (primary — used by Stage 1+)
+      - WikiQA Corpus (Microsoft Research)
+      - Question-Answer Dataset (factoid Q&A pairs)
+      - CoQA (Conversational Question Answering)
+      - English Movie Subtitle Dataset
+      - Movie Dialog Corpus (Cornell)
 
     Requires either:
       - The ``kaggle`` Python package (``pip install kaggle``), or
@@ -706,45 +745,38 @@ def stage0_download_corpus(cfg: dict) -> None:
     C:\\Users\\<user>\\.kaggle\\ (Windows), or set KAGGLE_USERNAME +
     KAGGLE_KEY environment variables.
     """
-    corpus_dir = Path(cfg["corpus_dir"])
-    if corpus_dir.exists() and any(corpus_dir.glob("*.csv")):
-        print(f"✓ Corpus already present at {corpus_dir}")
-        return
+    data_dir = Path(cfg["corpus_dir"]).parent
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("STAGE 0 — Download Ubuntu Dialogue Corpus from Kaggle")
+    print("STAGE 0 — Download corpora from Kaggle")
     print("=" * 60)
     t0 = time.time()
 
-    # Ensure parent data/ directory exists
-    data_dir = corpus_dir.parent
-    data_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = 0
+    for slug, subdir in KAGGLE_DATASETS:
+        dest = data_dir / subdir
+        if dest.exists() and any(dest.iterdir()):
+            print(f"  ✓ {subdir}/ already present — skipping")
+            continue
 
-    # Try kaggle Python API first, fall back to CLI
-    try:
-        from kaggle.api.kaggle_api_extended import KaggleApi
-        api = KaggleApi()
-        api.authenticate()
-        print(f"  Downloading {KAGGLE_DATASET} → {data_dir} …")
-        api.dataset_download_files(KAGGLE_DATASET, path=str(data_dir), unzip=True)
-    except ImportError:
-        print("  kaggle package not installed — trying kaggle CLI …")
-        try:
-            subprocess.run(
-                ["kaggle", "datasets", "download", "-d", KAGGLE_DATASET,
-                 "-p", str(data_dir), "--unzip"],
-                check=True,
-            )
-        except FileNotFoundError:
-            raise RuntimeError(
-                "Could not download corpus: install the kaggle package "
-                "(pip install kaggle) or ensure the kaggle CLI is on PATH."
-            )
+        dest.mkdir(parents=True, exist_ok=True)
+        _kaggle_download(slug, dest)
 
-    # The Kaggle dataset extracts as Ubuntu-dialogue-corpus/ with CSVs inside.
-    # If it extracted flat (CSVs directly in data_dir), move them into the expected subdir.
+        # Some datasets extract flat into dest, others create a subfolder.
+        # If dest is empty but a nested folder appeared, it's fine.
+        if not any(dest.iterdir()):
+            print(f"  ⚠ Warning: {dest} is empty after download — check manually")
+        else:
+            n_files = sum(1 for _ in dest.rglob("*") if _.is_file())
+            total_size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file())
+            print(f"  ✓ {subdir}/ — {n_files} files ({total_size / 1e6:.0f} MB)")
+            downloaded += 1
+
+    # Verify primary corpus (Ubuntu) has CSVs — needed for Stage 1
+    corpus_dir = Path(cfg["corpus_dir"])
     if not corpus_dir.exists():
-        # Check if CSVs landed directly in data_dir
+        # CSVs may have landed directly in data_dir
         flat_csvs = list(data_dir.glob("dialogueText*.csv"))
         if flat_csvs:
             corpus_dir.mkdir(parents=True, exist_ok=True)
@@ -754,14 +786,12 @@ def stage0_download_corpus(cfg: dict) -> None:
 
     if not corpus_dir.exists() or not any(corpus_dir.glob("*.csv")):
         raise FileNotFoundError(
-            f"Download succeeded but no CSV files found in {corpus_dir}. "
+            f"Ubuntu corpus CSV files not found in {corpus_dir}. "
             f"Check the extracted contents in {data_dir}."
         )
 
-    csv_count = len(list(corpus_dir.glob("*.csv")))
-    total_size = sum(f.stat().st_size for f in corpus_dir.glob("*.csv"))
-    print(f"  ✓ Downloaded {csv_count} CSV files ({total_size / 1e9:.1f} GB) "
-          f"in {time.time() - t0:.0f}s\n")
+    print(f"\n  Stage 0 done — {downloaded} new dataset(s) downloaded "
+          f"({time.time() - t0:.0f}s)\n")
 
 
 # ── Stage 1 ───────────────────────────────────────────────────────────────────
