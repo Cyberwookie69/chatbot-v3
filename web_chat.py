@@ -1,7 +1,7 @@
 """
 web_chat.py — Flask web GUI for dynamic multi-model Seq2Seq chatbot comparison.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Provides a browser-based chat interface with model registry support:

@@ -1,7 +1,7 @@
 """
 chatv2.py — CLI dual-model comparison chat with greedy / top-p / beam decoding.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Loads baseline and attention models simultaneously and shows both responses

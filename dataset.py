@@ -1,7 +1,7 @@
 """
 dataset.py — PyTorch Dataset and DataLoader for BPE-tokenised Ubuntu pairs.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Reads the JSONL files produced by phase1.py Stage 6.

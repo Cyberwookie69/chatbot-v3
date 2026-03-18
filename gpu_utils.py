@@ -1,7 +1,7 @@
 """
 gpu_utils.py — Multi-GPU utilities for OpenShift AI / CUDA clusters.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Supports 1-4 A100 GPUs (or any CUDA device) with automatic detection and

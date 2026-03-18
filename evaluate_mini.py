@@ -1,7 +1,7 @@
 """
 evaluate_mini.py — Lightweight evaluation of mini-trained Seq2Seq models.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Designed to run automatically after train_mini.py, but can also be called

@@ -1,7 +1,7 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Trains both "baseline" (no attention) and "attention" (Bahdanau) models.

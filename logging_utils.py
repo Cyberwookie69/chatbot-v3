@@ -1,7 +1,7 @@
 """
 logging_utils.py — Timestamped run logging for all main() entry points.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Captures ALL console output (print + logging) to a timestamped log file

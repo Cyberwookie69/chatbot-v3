@@ -1,4 +1,4 @@
-# Ubuntu Seq2Seq Chatbot v3.2
+# Ubuntu Seq2Seq Chatbot v4.0
 
 A sequence-to-sequence chatbot trained on the Ubuntu Dialogue Corpus. Supports baseline (no attention) and Bahdanau attention models. Includes a web GUI for side-by-side model comparison with per-token confidence, attention heatmaps, and inference metrics.
 

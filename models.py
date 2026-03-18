@@ -1,7 +1,7 @@
 """
 models.py — Seq2Seq architecture (clean from scratch).
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Components:

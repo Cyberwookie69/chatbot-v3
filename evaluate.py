@@ -1,7 +1,7 @@
 """
 evaluate.py — Full evaluation suite for both Seq2Seq models.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Produces per run:

@@ -1,7 +1,7 @@
 """
 analyze_data.py — Phase 1 artifact quality analysis.
 
-Version : 3.2.0
+Version : 4.0.0
 Date    : 2026-03-18
 
 Standalone data quality analysis tool.
