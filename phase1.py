@@ -58,9 +58,12 @@ import os
 import pickle
 import random
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -685,6 +688,80 @@ def _filter_dialogue(dlg: Dict, cfg: dict) -> Tuple[Optional[Dict], str]:
                     return None, "temporal_gap_ratio"
 
     return {"id": dlg["id"], "turns": cleaned_turns}, "kept"
+
+
+# ── Stage 0: Kaggle download ──────────────────────────────────────────────────
+
+KAGGLE_DATASET = "rtatman/ubuntu-dialogue-corpus"
+
+
+def stage0_download_corpus(cfg: dict) -> None:
+    """Download Ubuntu Dialogue Corpus from Kaggle if not already present.
+
+    Requires either:
+      - The ``kaggle`` Python package (``pip install kaggle``), or
+      - The ``kaggle`` CLI on PATH.
+
+    Authentication: place kaggle.json in ~/.kaggle/ (Linux/Mac) or
+    C:\\Users\\<user>\\.kaggle\\ (Windows), or set KAGGLE_USERNAME +
+    KAGGLE_KEY environment variables.
+    """
+    corpus_dir = Path(cfg["corpus_dir"])
+    if corpus_dir.exists() and any(corpus_dir.glob("*.csv")):
+        print(f"✓ Corpus already present at {corpus_dir}")
+        return
+
+    print("=" * 60)
+    print("STAGE 0 — Download Ubuntu Dialogue Corpus from Kaggle")
+    print("=" * 60)
+    t0 = time.time()
+
+    # Ensure parent data/ directory exists
+    data_dir = corpus_dir.parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try kaggle Python API first, fall back to CLI
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+        print(f"  Downloading {KAGGLE_DATASET} → {data_dir} …")
+        api.dataset_download_files(KAGGLE_DATASET, path=str(data_dir), unzip=True)
+    except ImportError:
+        print("  kaggle package not installed — trying kaggle CLI …")
+        try:
+            subprocess.run(
+                ["kaggle", "datasets", "download", "-d", KAGGLE_DATASET,
+                 "-p", str(data_dir), "--unzip"],
+                check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "Could not download corpus: install the kaggle package "
+                "(pip install kaggle) or ensure the kaggle CLI is on PATH."
+            )
+
+    # The Kaggle dataset extracts as Ubuntu-dialogue-corpus/ with CSVs inside.
+    # If it extracted flat (CSVs directly in data_dir), move them into the expected subdir.
+    if not corpus_dir.exists():
+        # Check if CSVs landed directly in data_dir
+        flat_csvs = list(data_dir.glob("dialogueText*.csv"))
+        if flat_csvs:
+            corpus_dir.mkdir(parents=True, exist_ok=True)
+            for f in flat_csvs:
+                shutil.move(str(f), str(corpus_dir / f.name))
+            print(f"  Moved {len(flat_csvs)} CSV files → {corpus_dir}")
+
+    if not corpus_dir.exists() or not any(corpus_dir.glob("*.csv")):
+        raise FileNotFoundError(
+            f"Download succeeded but no CSV files found in {corpus_dir}. "
+            f"Check the extracted contents in {data_dir}."
+        )
+
+    csv_count = len(list(corpus_dir.glob("*.csv")))
+    total_size = sum(f.stat().st_size for f in corpus_dir.glob("*.csv"))
+    print(f"  ✓ Downloaded {csv_count} CSV files ({total_size / 1e9:.1f} GB) "
+          f"in {time.time() - t0:.0f}s\n")
 
 
 # ── Stage 1 ───────────────────────────────────────────────────────────────────
@@ -1813,6 +1890,9 @@ def main(cfg: Optional[Dict] = None, script_name: str = "phase1") -> None:
     print(f"  fasttext_epochs    : {cfg.get('fasttext_epochs', 10)}")
     print("=" * 60)
     print()
+
+    # ── Stage 0 — Download corpus from Kaggle if needed ────────────────────
+    stage0_download_corpus(cfg)
 
     # ── Stage 1 ──────────────────────────────────────────────────────────────
     s1_path = artifact_dir / "stage1_dialogues.pkl"
