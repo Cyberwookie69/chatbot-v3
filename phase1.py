@@ -164,6 +164,14 @@ PHASE1_CONFIG = {
     #                    behaviour for backwards compatibility)
     "domain_filter":            True,         # Stage 4.5: retain command/question pairs only
     "domain_filter_strategy":   "union",      # "command" | "question" | "union" | "intersection"
+
+    # ── Stage 4.6: Additional corpora ──────────────────────────────────────
+    "extra_corpora":            True,         # Stage 4.6: load WikiQA, CoQA, subtitles, etc.
+    "qa_min_difficulty":        1,            # Question-Answer: min difficulty filter
+    "coqa_filter_trivial":      True,         # CoQA: filter yes/no/unknown answers
+    "coqa_max_ctx_turns":       5,            # CoQA: max previous Q&A turns in context
+    "subtitle_context_lines":   3,            # Subtitles: lines of context before response
+    "cornell_max_ctx_turns":    4,            # Cornell: max previous turns in context
 }
 
 # ── Stage expected artifacts ──────────────────────────────────────────────────
@@ -2082,6 +2090,30 @@ def main(cfg: Optional[Dict] = None, script_name: str = "phase1") -> None:
         )
     else:
         print("✓ Stage 4.5 skipped (domain_filter=False)\n")
+
+    # ── Stage 4.6 — Load additional corpora ─────────────────────────────────
+    if cfg.get("extra_corpora", True):
+        from corpus_loaders import load_all_extra_corpora
+        data_dir = Path(cfg["corpus_dir"]).parent
+        extra_pairs = load_all_extra_corpora(data_dir, cfg)
+        if extra_pairs:
+            train_ratio = len(train_pairs) / max(1, len(train_pairs) + len(val_pairs) + len(test_pairs))
+            val_ratio = len(val_pairs) / max(1, len(train_pairs) + len(val_pairs) + len(test_pairs))
+            # Split extra pairs proportionally: ~80% train, ~10% val, ~10% test
+            import random as _rnd
+            _rnd.Random(42).shuffle(extra_pairs)
+            n_train = int(len(extra_pairs) * train_ratio)
+            n_val = int(len(extra_pairs) * val_ratio)
+            extra_train = extra_pairs[:n_train]
+            extra_val = extra_pairs[n_train:n_train + n_val]
+            extra_test = extra_pairs[n_train + n_val:]
+            train_pairs.extend(extra_train)
+            val_pairs.extend(extra_val)
+            test_pairs.extend(extra_test)
+            print(f"  Merged: train +{len(extra_train):,}  val +{len(extra_val):,}  "
+                  f"test +{len(extra_test):,}")
+            print(f"  New totals: train={len(train_pairs):,}  val={len(val_pairs):,}  "
+                  f"test={len(test_pairs):,}\n")
 
     # ── Stage 5 ──────────────────────────────────────────────────────────────
     # Stage 5 produces either .json (HF Tokenizers) or .model (SentencePiece).
