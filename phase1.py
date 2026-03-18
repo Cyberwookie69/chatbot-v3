@@ -790,6 +790,14 @@ def stage0_download_corpus(cfg: dict) -> None:
             f"Check the extracted contents in {data_dir}."
         )
 
+    # Keep only dialogueText_301.csv (superset) — remove smaller variants to save disk
+    kept = corpus_dir / "dialogueText_301.csv"
+    if kept.exists():
+        for f in list(corpus_dir.glob("dialogueText*.csv")):
+            if f.name != "dialogueText_301.csv":
+                f.unlink()
+                print(f"  Removed {f.name} (subset of 301)")
+
     print(f"\n  Stage 0 done — {downloaded} new dataset(s) downloaded "
           f"({time.time() - t0:.0f}s)\n")
 
