@@ -1,7 +1,7 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.0.3
+Version : 4.1.0
 Modified: 2026-03-19
 
 Trains both "baseline" (no attention) and "attention" (Bahdanau) models.
@@ -43,6 +43,7 @@ is the attention mechanism — providing a controlled apples-to-apples ablation.
     clip = 1.0. Allows valid large gradients during TF=1.0 phase.
 """
 
+import argparse
 import os
 import json
 import math
@@ -604,12 +605,14 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
     return history
 
 
-def main(cfg: dict = None, script_name: str = "train") -> None:
+def main(cfg: dict = None, script_name: str = "train",
+         cli_args: argparse.Namespace | None = None) -> None:
     """Train baseline model, then attention model.
 
     Args:
         cfg:         Config dict overrides. Defaults to CONFIG from config.py.
         script_name: Used for the run log filename (e.g. "train_mini").
+        cli_args:    Parsed command-line arguments (--gpus, --gpu-id, etc.).
     """
     from logging_utils import setup_run_logging
     active_cfg = cfg if cfg is not None else CONFIG
@@ -618,8 +621,24 @@ def main(cfg: dict = None, script_name: str = "train") -> None:
     # AC2-C1: set all random seeds for full reproducibility.
     set_seed(active_cfg.get("seed", 42))
 
-    device, gpu_info = setup_device()
+    # CLI overrides for epochs
+    if cli_args and cli_args.epochs is not None:
+        active_cfg = dict(active_cfg)
+        active_cfg["num_epochs"] = cli_args.epochs
+
+    device, gpu_info = setup_device(
+        prefer_gpu=cli_args.gpu_id if cli_args else -1,
+        max_gpus=cli_args.gpus if cli_args else None,
+    )
     active_cfg = auto_scale_config(active_cfg, gpu_info)
+
+    # CLI overrides for batch size and workers (after auto_scale so they take priority)
+    if cli_args and cli_args.batch_size is not None:
+        active_cfg["batch_size"] = cli_args.batch_size
+        print(f"[cli] batch_size overridden → {cli_args.batch_size}")
+    if cli_args and cli_args.workers is not None:
+        active_cfg["num_workers"] = cli_args.workers
+        print(f"[cli] num_workers overridden → {cli_args.workers}")
     print(f"Device: {device}")
 
     os.makedirs(active_cfg["checkpoint_dir"], exist_ok=True)
@@ -666,5 +685,21 @@ def main(cfg: dict = None, script_name: str = "train") -> None:
     print(f"  Attention best val loss : {min(attention_history['val_loss']):.4f}")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train Seq2Seq chatbot models")
+    parser.add_argument("--gpus", type=int, default=None,
+                        help="Number of GPUs to use (overrides auto-detect). 0 = CPU only.")
+    parser.add_argument("--gpu-id", type=int, default=-1,
+                        help="Use only this GPU index (e.g. --gpu-id 0). Default: use all.")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Number of DataLoader workers (overrides auto-detect).")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override batch size (total, not per-GPU).")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override number of training epochs.")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(cli_args=args)
