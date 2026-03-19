@@ -1,6 +1,10 @@
 """
 corpus_loaders.py — Load and filter additional training corpora into (ctx, resp) pairs.
 
+Version : 4.0.0
+Modified: 2026-03-19
+Changes : v4.0.0 — Initial version: WikiQA, Q&A, CoQA, subtitles, Cornell loaders
+
 Each loader converts its corpus into the same {"ctx": str, "resp": str} format
 that phase1.py Stage 4 produces, so pairs can be merged before Stage 5 (BPE training).
 

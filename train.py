@@ -3,6 +3,15 @@ train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
 Version : 4.1.2
 Modified: 2026-03-19
+Changes : v4.1.2 — Fix validation: no_grad context manager, NaN diagnostics, restore train mode
+          v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
+          v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
+          v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
+          v4.0.2 — Skip torch.compile with DataParallel (multi-GPU incompatible)
+          v4.0.1 — Fix torch.compile + DataParallel crash during validation
+          v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — Initial version: 3-phase TF schedule, cosine LR, label smoothing
+          v2.0.0 — Initial clean-from-scratch rewrite
 
 Trains both "baseline" (no attention) and "attention" (Bahdanau) models.
 Both models are trained with identical hyperparameters — the only difference

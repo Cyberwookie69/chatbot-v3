@@ -3,6 +3,10 @@ gpu_utils.py — Multi-GPU utilities for OpenShift AI / CUDA clusters.
 
 Version : 4.1.1
 Modified: 2026-03-19
+Changes : v4.1.1 — Remove prefer_gpu, add max_gpus param + CPU-only mode (--gpus 0)
+          v4.1.0 — Add max_gpus parameter to setup_device for CLI --gpus support
+          v4.0.0 — Version bump for multi-corpus project
+          v3.0.0 — Initial version: auto-detect, DataParallel, A100 batch scaling
 
 Supports 1-4 A100 GPUs (or any CUDA device) with automatic detection and
 batch size scaling. Designed for environments where GPU count and type are

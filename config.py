@@ -2,7 +2,11 @@
 config.py — Single source of truth for all hyperparameters and paths.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — 3-phase TF schedule, cosine LR with warmup, label smoothing
+          v3.0.0 — Jupyter notebook paths, multi-GPU batch scaling
+          v2.0.0 — Initial clean-from-scratch rewrite
 
 Every other file imports from here. No magic numbers anywhere else.
 

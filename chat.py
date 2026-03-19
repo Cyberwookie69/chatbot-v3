@@ -1,6 +1,11 @@
 """
 chat.py — Interactive inference for trained Seq2Seq chatbot.
 
+Version : 4.0.0
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v2.0.0 — Initial version
+
 Loads a checkpoint and runs an interactive terminal chat loop.
 Maintains a rolling context window (last N turns) for multi-turn conversation.
 

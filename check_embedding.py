@@ -2,7 +2,10 @@
 check_embedding.py — Standalone embedding validation tool.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — 8-category embedding validation suite
+          v2.0.0 — Initial version
 
 Tests 8 categories in sequence:
   A. Matrix file integrity         (shape, dtype, NaN/Inf, norm stats)

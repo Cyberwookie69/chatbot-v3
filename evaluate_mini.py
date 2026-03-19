@@ -2,7 +2,10 @@
 evaluate_mini.py — Lightweight evaluation of mini-trained Seq2Seq models.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — Lightweight 3-layer evaluation for mini models
+          v2.0.0 — Initial version
 
 Designed to run automatically after train_mini.py, but can also be called
 directly. Produces a 3-layer analysis:

@@ -2,7 +2,10 @@
 dataset.py — PyTorch Dataset and DataLoader for BPE-tokenised Ubuntu pairs.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — JSONL format, dynamic padding, src_lengths support
+          v2.0.0 — Initial clean-from-scratch rewrite
 
 Reads the JSONL files produced by phase1.py Stage 6.
 Each line: {"ctx": [int, ...], "resp": [int, ...]}

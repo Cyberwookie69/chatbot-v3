@@ -2,9 +2,10 @@
 phase1.py — Data pipeline for clean-from-scratch Ubuntu Dialogue Corpus processing.
 
 Version : 4.0.0
-Modified: 2026-03-18
+Modified: 2026-03-19
 Changes : v4.0.0 — Multi-corpus support (WikiQA, CoQA, subtitles, Cornell),
-                    Kaggle auto-download (Stage 0), DuckDB OOM fallback
+                    Kaggle auto-download (Stage 0), DuckDB OOM fallback,
+                    keep only dialogueText_301.csv, Stage 4.6 extra corpora config
           v3.2.0 — Word2Vec replaces FastText, HF Tokenizers for Stage 5,
                     lru_cache on date parsing, precompiled regex, orjson support,
                     auto-cleanup of intermediate files, progress bars

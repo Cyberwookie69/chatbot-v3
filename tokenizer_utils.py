@@ -2,7 +2,10 @@
 tokenizer_utils.py — Unified tokenizer interface for BPE encoding/decoding.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — Unified HF Tokenizers + SentencePiece interface
+          v3.0.0 — Initial version
 
 Supports both HuggingFace Tokenizers (fast, Rust-based) and SentencePiece
 (legacy fallback). All consumers (phase1 stages 6-7, chatv2, evaluate) use

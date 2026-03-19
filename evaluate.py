@@ -2,7 +2,10 @@
 evaluate.py — Full evaluation suite for both Seq2Seq models.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — BLEU/ROUGE/BERTScore/Distinct-N, attention heatmaps
+          v2.0.0 — Initial clean-from-scratch rewrite
 
 Produces per run:
   - bleu_results.json        BLEU-1/2/3/4 (sacrebleu 13a) + ROUGE-L + Distinct-1/2 + BERTScore

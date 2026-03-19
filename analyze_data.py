@@ -2,7 +2,10 @@
 analyze_data.py — Phase 1 artifact quality analysis.
 
 Version : 4.0.0
-Date    : 2026-03-18
+Modified: 2026-03-18
+Changes : v4.0.0 — Version bump for multi-corpus project
+          v3.2.0 — Data quality analysis, Sankey diagrams, filter stats
+          v2.0.0 — Initial version
 
 Standalone data quality analysis tool.
 Checks every stage artifact for statistical health, data dominance,
