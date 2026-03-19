@@ -1,9 +1,10 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.6
+Version : 4.2.7
 Modified: 2026-03-19
-Changes : v4.2.6 — Suppress PyTorch scheduler epoch deprecation warning
+Changes : v4.2.7 — Print version number at startup
+          v4.2.6 — Suppress PyTorch scheduler epoch deprecation warning
           v4.2.5 — Show decoded samples every epoch instead of every 2
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
@@ -79,6 +80,8 @@ from gpu_utils import (setup_device, auto_scale_config, wrap_model, unwrap_model
 # torch.amp.autocast with dtype=torch.bfloat16 is sufficient.
 
 warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler", category=UserWarning)
+
+__version__ = "4.2.7"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -729,6 +732,8 @@ def main(cfg: dict = None, script_name: str = "train",
         max_gpus=cli_args.gpus if cli_args else None,
     )
     _is_main = is_main_process(gpu_info)
+    if _is_main:
+        print(f"train.py v{__version__}")
     active_cfg = auto_scale_config(active_cfg, gpu_info)
 
     # CLI overrides for batch size and workers (after auto_scale so they take priority)

@@ -1,9 +1,10 @@
 """
 tokenizer_utils.py — Unified tokenizer interface for BPE encoding/decoding.
 
-Version : 4.0.0
-Modified: 2026-03-18
-Changes : v4.0.0 — Version bump for multi-corpus project
+Version : 4.0.1
+Modified: 2026-03-19
+Changes : v4.0.1 — Surface ImportError when HF tokenizers not installed instead of silent fallback
+          v4.0.0 — Version bump for multi-corpus project
           v3.2.0 — Unified HF Tokenizers + SentencePiece interface
           v3.0.0 — Initial version
 
@@ -136,7 +137,13 @@ def load_tokenizer(artifact_dir: Union[str, Path]):
         try:
             return HFTokenizerWrapper(str(hf_path))
         except ImportError:
-            pass  # tokenizers not installed, fall through to SPM
+            if not spm_path.exists():
+                raise ImportError(
+                    f"Found {hf_path} but 'tokenizers' package is not installed "
+                    f"and no SentencePiece fallback ({spm_path}) exists. "
+                    f"Install via: pip install tokenizers"
+                )
+            # fall through to SPM
 
     if spm_path.exists():
         import sentencepiece as spm

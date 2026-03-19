@@ -31,6 +31,7 @@ numpy>=1.24.0
 
 # ── Tokenisation ─────────────────────────────────────────────────────────────
 sentencepiece>=0.1.99       # SentencePiece BPE (phase1 stage 5 + 6)
+tokenizers>=0.19.0          # HF Tokenizers — fast BPE + sample decoding in training
 
 # ── Embeddings ───────────────────────────────────────────────────────────────
 gensim>=4.3.0               # Word2Vec 300d (phase1 stage 7)
@@ -50,7 +51,7 @@ flask>=3.0.0                # web_chat.py browser interface
 # ── Performance (optional) ──────────────────────────────────────────────────
 duckdb>=1.0.0               # fast CSV loading in phase1 stage 1 (optional)
 orjson>=3.9.0               # fast JSON serialisation in phase1 (optional)
-tokenizers>=0.19.0          # HF Tokenizers for faster BPE training (optional)
+
 
 # ── Data download ───────────────────────────────────────────────────────────
 kaggle>=1.6.0               # Stage 0: download Ubuntu Dialogue Corpus
