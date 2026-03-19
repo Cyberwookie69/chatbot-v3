@@ -1,7 +1,7 @@
 """
 gpu_utils.py — Multi-GPU utilities for OpenShift AI / CUDA clusters.
 
-Version : 4.1.0
+Version : 4.1.1
 Modified: 2026-03-19
 
 Supports 1-4 A100 GPUs (or any CUDA device) with automatic detection and
@@ -44,13 +44,12 @@ class GPUInfo:
         return f"{self.num_gpus}x GPU: {gpus}"
 
 
-def setup_device(prefer_gpu: int = -1, max_gpus: Optional[int] = None) -> Tuple[torch.device, "GPUInfo"]:
+def setup_device(max_gpus: Optional[int] = None) -> Tuple[torch.device, "GPUInfo"]:
     """
     Detect available GPUs and return (device, GPUInfo).
 
     Args:
-        prefer_gpu: If >= 0, use only that GPU index. If -1, use all available.
-        max_gpus:   Cap the number of GPUs to use. 0 = force CPU. None = no cap.
+        max_gpus: Cap the number of GPUs to use. 0 = force CPU. None = no cap.
 
     Returns:
         (device, gpu_info) — device is always cuda:0 when GPUs are available,
@@ -67,12 +66,6 @@ def setup_device(prefer_gpu: int = -1, max_gpus: Optional[int] = None) -> Tuple[
         return info.device, info
 
     num_gpus = torch.cuda.device_count()
-
-    if prefer_gpu >= 0:
-        if prefer_gpu >= num_gpus:
-            raise ValueError(f"Requested GPU {prefer_gpu} but only {num_gpus} available")
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(prefer_gpu)
-        num_gpus = 1
 
     if max_gpus is not None and num_gpus > max_gpus:
         print(f"[gpu_utils] Capping GPUs: {num_gpus} available → {max_gpus} (--gpus)")

@@ -1,7 +1,7 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.1.0
+Version : 4.1.1
 Modified: 2026-03-19
 
 Trains both "baseline" (no attention) and "attention" (Bahdanau) models.
@@ -626,8 +626,14 @@ def main(cfg: dict = None, script_name: str = "train",
         active_cfg = dict(active_cfg)
         active_cfg["num_epochs"] = cli_args.epochs
 
+    # CPU core limit — caps torch threads and DataLoader workers
+    if cli_args and cli_args.cpus is not None:
+        torch.set_num_threads(cli_args.cpus)
+        torch.set_num_interop_threads(max(1, cli_args.cpus // 2))
+        print(f"[cli] CPU cores capped → {cli_args.cpus} "
+              f"(threads={cli_args.cpus}, interop={max(1, cli_args.cpus // 2)})")
+
     device, gpu_info = setup_device(
-        prefer_gpu=cli_args.gpu_id if cli_args else -1,
         max_gpus=cli_args.gpus if cli_args else None,
     )
     active_cfg = auto_scale_config(active_cfg, gpu_info)
@@ -639,6 +645,11 @@ def main(cfg: dict = None, script_name: str = "train",
     if cli_args and cli_args.workers is not None:
         active_cfg["num_workers"] = cli_args.workers
         print(f"[cli] num_workers overridden → {cli_args.workers}")
+    elif cli_args and cli_args.cpus is not None:
+        # Cap workers to CPU count if not explicitly set
+        max_workers = min(active_cfg.get("num_workers", 8), cli_args.cpus)
+        active_cfg["num_workers"] = max_workers
+        print(f"[cli] num_workers capped to CPU count → {max_workers}")
     print(f"Device: {device}")
 
     os.makedirs(active_cfg["checkpoint_dir"], exist_ok=True)
@@ -689,8 +700,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Seq2Seq chatbot models")
     parser.add_argument("--gpus", type=int, default=None,
                         help="Number of GPUs to use (overrides auto-detect). 0 = CPU only.")
-    parser.add_argument("--gpu-id", type=int, default=-1,
-                        help="Use only this GPU index (e.g. --gpu-id 0). Default: use all.")
+    parser.add_argument("--cpus", type=int, default=None,
+                        help="Number of CPU cores to use. Caps workers and torch threads.")
     parser.add_argument("--workers", type=int, default=None,
                         help="Number of DataLoader workers (overrides auto-detect).")
     parser.add_argument("--batch-size", type=int, default=None,
