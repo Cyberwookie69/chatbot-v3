@@ -1,10 +1,9 @@
 """
 gpu_utils.py — Multi-GPU utilities for OpenShift AI / CUDA clusters.
 
-Version : 4.2.0
+Version : 4.2.1
 Modified: 2026-03-19
-Changes : v4.2.0 — Migrate from DataParallel to DistributedDataParallel (DDP),
-                    add is_main_process(), cleanup_ddp(), backward-compat DP fallback
+Changes : v4.2.1 — Remove DataParallel completely, DDP-only for multi-GPU
           v4.1.1 — Remove prefer_gpu, add max_gpus param + CPU-only mode (--gpus 0)
           v4.1.0 — Add max_gpus parameter to setup_device for CLI --gpus support
           v4.0.0 — Version bump for multi-corpus project
@@ -217,10 +216,10 @@ def auto_scale_config(config: dict, gpu_info: GPUInfo) -> dict:
 
 def wrap_model(model: nn.Module, gpu_info: GPUInfo) -> nn.Module:
     """
-    Wrap model in DDP (preferred) or DataParallel (legacy fallback).
+    Wrap model in DDP for multi-GPU training.
 
     DDP wrapping requires the model to already be on the correct device.
-    torch.compile should be applied BEFORE calling wrap_model for DDP.
+    torch.compile should be applied BEFORE calling wrap_model.
 
     Returns the (possibly wrapped) model.
     """
@@ -231,25 +230,19 @@ def wrap_model(model: nn.Module, gpu_info: GPUInfo) -> nn.Module:
                   f"device cuda:{gpu_info.local_rank})")
         return model
 
-    # Legacy: single process, possibly multi-GPU via DataParallel
-    if gpu_info.num_gpus <= 1:
-        return model
-
-    device_ids = list(range(gpu_info.num_gpus))
-    model = nn.DataParallel(model, device_ids=device_ids)
-    print(f"[gpu_utils] Model wrapped in DataParallel (GPUs: {device_ids})")
+    # Single GPU or CPU — no wrapping needed
     return model
 
 
 def unwrap_model(model: nn.Module) -> nn.Module:
     """
-    Get the underlying model from a DDP or DataParallel wrapper.
+    Get the underlying model from a DDP wrapper.
 
     Safe to call on non-wrapped models (returns as-is).
     Use this whenever you need to access model internals (encoder, decoder, etc.)
     for inference, checkpoint saving, or attention visualization.
     """
-    if isinstance(model, (nn.DataParallel, DDP)):
+    if isinstance(model, DDP):
         return model.module
     return model
 

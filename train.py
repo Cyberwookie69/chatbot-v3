@@ -1,10 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.0
+Version : 4.2.1
 Modified: 2026-03-19
-Changes : v4.2.0 — Migrate to DistributedDataParallel (DDP) for multi-GPU training,
-                    rank-gated logging/checkpoints/TensorBoard, DDP val loss allreduce
+Changes : v4.2.1 — --gpus N auto-launches DDP via torchrun, removed DataParallel
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -782,13 +781,13 @@ def main(cfg: dict = None, script_name: str = "train",
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Seq2Seq chatbot models")
     parser.add_argument("--gpus", type=int, default=None,
-                        help="Number of GPUs to use (overrides auto-detect). 0 = CPU only.")
+                        help="Number of GPUs. 0=CPU, 1=single GPU, 2+=DDP multi-GPU.")
     parser.add_argument("--cpus", type=int, default=None,
                         help="Number of CPU cores to use. Caps workers and torch threads.")
     parser.add_argument("--workers", type=int, default=None,
                         help="Number of DataLoader workers (overrides auto-detect).")
     parser.add_argument("--batch-size", type=int, default=None,
-                        help="Override batch size (total, not per-GPU).")
+                        help="Override per-GPU batch size.")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override number of training epochs.")
     parser.add_argument("--clean", action="store_true",
@@ -798,4 +797,12 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+
+    # Auto-launch DDP via torchrun when --gpus > 1
+    _in_ddp = "RANK" in os.environ
+    if not _in_ddp and args.gpus is not None and args.gpus > 1:
+        cmd = [sys.executable, "-m", "torch.distributed.run",
+               f"--nproc_per_node={args.gpus}"] + sys.argv
+        sys.exit(subprocess.call(cmd))
+
     main(cli_args=args)
