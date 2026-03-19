@@ -1,7 +1,7 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.0.2
+Version : 4.0.3
 Modified: 2026-03-19
 
 Trains both "baseline" (no attention) and "attention" (Bahdanau) models.
@@ -218,7 +218,7 @@ def train_epoch(
     return avg_train_loss, avg_grad_norm, global_step
 
 
-@torch.inference_mode()
+@torch.no_grad()  # no_grad instead of inference_mode: DP replica LSTM.flatten_parameters() needs inplace ops
 def evaluate_epoch(
     model: nn.Module,
     loader,
