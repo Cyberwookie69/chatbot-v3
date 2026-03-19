@@ -1,9 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.4
+Version : 4.2.5
 Modified: 2026-03-19
-Changes : v4.2.4 — Add decoded sample display (Src/Ref/Hyp) every 2 epochs during training
+Changes : v4.2.5 — Show decoded samples every epoch instead of every 2
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -677,8 +677,8 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
                 f"{elapsed:.1f}s"
             )
 
-        # 7i. Decoded samples (rank 0, every 2 epochs).
-        if _is_main and tokenizer is not None and epoch % 2 == 0:
+        # 7i. Decoded samples (rank 0, every epoch).
+        if _is_main and tokenizer is not None:
             _decode_samples(model, val_loader, device, tokenizer, config,
                             model_type, epoch)
 
