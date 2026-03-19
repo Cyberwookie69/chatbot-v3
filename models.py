@@ -1,9 +1,10 @@
 """
 models.py — Seq2Seq architecture (clean from scratch).
 
-Version : 4.0.0
-Modified: 2026-03-18
-Changes : v4.0.0 — Version bump for multi-corpus project
+Version : 4.0.1
+Modified: 2026-03-19
+Changes : v4.0.1 — Clamp logits to [-50, 50] to prevent bf16 overflow in autoregressive decoding
+          v4.0.0 — Version bump for multi-corpus project
           v3.2.0 — Bahdanau attention, Bridge module, shared embeddings
           v3.0.0 — Multi-GPU DataParallel compatibility
           v2.0.0 — Initial clean-from-scratch rewrite
@@ -475,6 +476,7 @@ class AttentionDecoder(nn.Module):
         # Projection bottleneck + tanh nonlinearity.
         projected = torch.tanh(self.projection(self.out_dropout(combined)))  # [batch, 512]
         logits = self.fc_out(projected)                                       # [batch, vocab_size]
+        logits = logits.clamp(-50, 50)  # prevent bf16 overflow in autoregressive decoding
 
         return logits, hidden, cell, new_context, step_attn
 
@@ -635,6 +637,7 @@ class BaselineDecoder(nn.Module):
             combined  = torch.cat([lstm_out, context], dim=1)          # [batch, 2048]
             projected = torch.tanh(self.projection(self.out_dropout(combined)))  # [batch, 512]
             logits    = self.fc_out(projected)                           # [batch, vocab_size]
+            logits    = logits.clamp(-50, 50)  # prevent bf16 overflow in autoregressive decoding
 
             logits_list.append(logits)
 
