@@ -1,7 +1,7 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.1.1
+Version : 4.1.2
 Modified: 2026-03-19
 
 Trains both "baseline" (no attention) and "attention" (Bahdanau) models.
@@ -219,7 +219,6 @@ def train_epoch(
     return avg_train_loss, avg_grad_norm, global_step
 
 
-@torch.no_grad()  # no_grad instead of inference_mode: DP replica LSTM.flatten_parameters() needs inplace ops
 def evaluate_epoch(
     model: nn.Module,
     loader,
@@ -244,32 +243,41 @@ def evaluate_epoch(
 
     total_loss = 0.0
     n_batches = 0
+    nan_batches = 0
 
-    for batch in tqdm(loader, desc="  val", unit="batch", dynamic_ncols=True, leave=False):
-        src: torch.Tensor = batch["src"].to(device)
-        src_lengths: torch.Tensor = batch["src_lengths"].to(device)
-        trg: torch.Tensor = batch["trg"].to(device)
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="  val", unit="batch", dynamic_ncols=True, leave=False):
+            src: torch.Tensor = batch["src"].to(device)
+            src_lengths: torch.Tensor = batch["src_lengths"].to(device)
+            trg: torch.Tensor = batch["trg"].to(device)
 
-        # Pass teacher_forcing_ratio=0.0 so the decoder uses its own predictions,
-        # not gold tokens.  trg still determines how many decode steps to run.
-        _device_type = device.type if hasattr(device, "type") else str(device).split(":")[0]
-        with torch.amp.autocast(device_type=_device_type, dtype=amp_dtype,
-                                enabled=_device_type == "cuda"):
-            output = model(src, src_lengths, trg, teacher_forcing_ratio=0.0)
+            # Pass teacher_forcing_ratio=0.0 so the decoder uses its own predictions,
+            # not gold tokens.  trg still determines how many decode steps to run.
+            _device_type = device.type if hasattr(device, "type") else str(device).split(":")[0]
+            with torch.amp.autocast(device_type=_device_type, dtype=amp_dtype,
+                                    enabled=_device_type == "cuda"):
+                output = model(src, src_lengths, trg, teacher_forcing_ratio=0.0)
 
-        vocab_size: int = output.size(-1)
-        loss = criterion(
-            output.reshape(-1, vocab_size),
-            trg[:, 1:].reshape(-1),   # exclude <sos>; criterion ignores <pad>
-        )
+            vocab_size: int = output.size(-1)
+            loss = criterion(
+                output.reshape(-1, vocab_size),
+                trg[:, 1:].reshape(-1),   # exclude <sos>; criterion ignores <pad>
+            )
 
-        if torch.isfinite(loss):
-            total_loss += loss.item()
-            n_batches += 1
+            if torch.isfinite(loss):
+                total_loss += loss.item()
+                n_batches += 1
+            else:
+                nan_batches += 1
+
+    if nan_batches > 0:
+        print(f"  ⚠ val: {nan_batches} NaN/Inf batches out of {n_batches + nan_batches}")
 
     avg_val_loss = total_loss / max(n_batches, 1)
     # Cap inside exp() to avoid overflow on very early / diverged runs.
     val_ppl = math.exp(min(avg_val_loss, 20))
+
+    model.train()
     return avg_val_loss, val_ppl
 
 
