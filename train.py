@@ -1,9 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.1.2
+Version : 4.1.3
 Modified: 2026-03-19
-Changes : v4.1.2 — Fix validation: no_grad context manager, NaN diagnostics, restore train mode
+Changes : v4.1.3 — Add --clean flag to remove checkpoints before training (fresh start)
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -669,8 +669,32 @@ def main(cfg: dict = None, script_name: str = "train",
         print(f"[cli] num_workers capped to CPU count → {max_workers}")
     print(f"Device: {device}")
 
-    os.makedirs(active_cfg["checkpoint_dir"], exist_ok=True)
-    os.makedirs(active_cfg["tensorboard_dir"], exist_ok=True)
+    # ── Clean checkpoints if requested ──────────────────────────────────────
+    ckpt_dir = active_cfg["checkpoint_dir"]
+    tb_dir_root = active_cfg["tensorboard_dir"]
+    if cli_args and cli_args.clean:
+        import glob as _glob
+        removed = 0
+        for pattern in [
+            os.path.join(ckpt_dir, "*.pt"),
+            os.path.join(ckpt_dir, "*.pt.tmp"),
+            os.path.join(ckpt_dir, "*_history.json"),
+            os.path.join(ckpt_dir, "run_info.json"),
+        ]:
+            for f in _glob.glob(pattern):
+                os.remove(f)
+                removed += 1
+        # Clear TensorBoard logs
+        for tb_sub in ["baseline", "attention"]:
+            tb_path = os.path.join(tb_dir_root, tb_sub)
+            if os.path.isdir(tb_path):
+                import shutil
+                shutil.rmtree(tb_path)
+                removed += 1
+        print(f"[clean] Removed {removed} checkpoint/log files — fresh start")
+
+    os.makedirs(ckpt_dir, exist_ok=True)
+    os.makedirs(tb_dir_root, exist_ok=True)
 
     # AC2-C2: log environment metadata (git hash, versions, timestamp).
     try:
@@ -725,6 +749,8 @@ def parse_args() -> argparse.Namespace:
                         help="Override batch size (total, not per-GPU).")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override number of training epochs.")
+    parser.add_argument("--clean", action="store_true",
+                        help="Remove existing checkpoints before training (fresh start).")
     return parser.parse_args()
 
 
