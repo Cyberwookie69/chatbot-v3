@@ -1,9 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.3
+Version : 4.2.4
 Modified: 2026-03-19
-Changes : v4.2.3 — DRY: extract _save_checkpoint/_make_checkpoint helpers, deduplicate
+Changes : v4.2.4 — Add decoded sample display (Src/Ref/Hyp) every 2 epochs during training
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -102,6 +102,54 @@ def _make_checkpoint(epoch, global_step, model, model_type, optimizer, scheduler
     }
     ckpt.update(extra)
     return ckpt
+
+
+def _decode_samples(
+    model: nn.Module,
+    loader,
+    device: torch.device,
+    tokenizer,
+    config: dict,
+    model_type: str,
+    epoch: int,
+    n_samples: int = 8,
+) -> None:
+    """Decode a few validation samples and print Src / Ref / Hyp."""
+    model.eval()
+    sos_idx = config.get("sos_idx", 2)
+    eos_idx = config.get("eos_idx", 3)
+    pad_idx = config.get("pad_idx", 0)
+
+    def _ids_to_text(ids):
+        """Convert token IDs to text, stripping special tokens."""
+        clean = [i for i in ids if i not in (sos_idx, eos_idx, pad_idx)]
+        return tokenizer.decode(clean)
+
+    print(f"\n  [{model_type}] Decoded samples — epoch {epoch}")
+
+    with torch.no_grad():
+        batch = next(iter(loader))
+        src = batch["src"].to(device)
+        src_lengths = batch["src_lengths"].to(device)
+        trg = batch["trg"].to(device)
+
+        amp_dtype = getattr(torch, config.get("amp_dtype", "bfloat16"))
+        _dev = device.type if hasattr(device, "type") else "cpu"
+        with torch.amp.autocast(device_type=_dev, dtype=amp_dtype, enabled=_dev == "cuda"):
+            output = model(src, src_lengths, trg, teacher_forcing_ratio=0.0)
+
+        preds = output.argmax(dim=-1)  # [B, trg_len-1]
+
+        for i in range(min(n_samples, src.size(0))):
+            src_text = _ids_to_text(src[i].tolist())
+            ref_text = _ids_to_text(trg[i].tolist())
+            hyp_text = _ids_to_text(preds[i].tolist())
+            print(f"\n  Src : {src_text[:80]}")
+            print(f"  Ref : {ref_text[:80]}")
+            print(f"  Hyp : {hyp_text[:80]}")
+
+    print()
+    model.train()
 
 
 def train_epoch(
@@ -429,6 +477,15 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
         gpu_info=gpu_info,
     )
 
+    # ── 1b. Tokenizer for decoded sample display ────────────────────────────
+    tokenizer = None
+    if _is_main:
+        try:
+            from tokenizer_utils import load_tokenizer
+            tokenizer = load_tokenizer(config["artifact_dir"])
+        except Exception as e:
+            print(f"[{model_type}] Could not load tokenizer for sample decoding: {e}")
+
     # ── 2. Model ─────────────────────────────────────────────────────────────
     model = build_model(model_type, config, device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -610,15 +667,20 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
         # 7h. Epoch summary (rank 0 only).
         if _is_main:
             print(
-            f"Epoch {epoch:3d}/{num_epochs} | "
-            f"Train: {train_loss:.4f} | "
-            f"Val: {val_loss:.4f} | "
-            f"PPL: {val_ppl:.2f} | "
-            f"LR: {lr:.2e} | "
-            f"TF: {tf_ratio:.2f} | "
-            f"Grad: {avg_gnorm:.3f} | "
-            f"{elapsed:.1f}s"
-        )
+                f"Epoch {epoch:3d}/{num_epochs} | "
+                f"Train: {train_loss:.4f} | "
+                f"Val: {val_loss:.4f} | "
+                f"PPL: {val_ppl:.2f} | "
+                f"LR: {lr:.2e} | "
+                f"TF: {tf_ratio:.2f} | "
+                f"Grad: {avg_gnorm:.3f} | "
+                f"{elapsed:.1f}s"
+            )
+
+        # 7i. Decoded samples (rank 0, every 2 epochs).
+        if _is_main and tokenizer is not None and epoch % 2 == 0:
+            _decode_samples(model, val_loader, device, tokenizer, config,
+                            model_type, epoch)
 
     if _is_main and writer is not None:
         writer.close()
