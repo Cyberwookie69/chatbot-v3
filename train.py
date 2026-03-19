@@ -1,9 +1,10 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.5
+Version : 4.2.6
 Modified: 2026-03-19
-Changes : v4.2.5 — Show decoded samples every epoch instead of every 2
+Changes : v4.2.6 — Suppress PyTorch scheduler epoch deprecation warning
+          v4.2.5 — Show decoded samples every epoch instead of every 2
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -59,6 +60,7 @@ import math
 import time
 import sys
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -75,6 +77,8 @@ from gpu_utils import (setup_device, auto_scale_config, wrap_model, unwrap_model
 
 # bf16 does not underflow like fp16 — GradScaler is not needed.
 # torch.amp.autocast with dtype=torch.bfloat16 is sufficient.
+
+warnings.filterwarnings("ignore", message=".*epoch parameter in.*scheduler", category=UserWarning)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

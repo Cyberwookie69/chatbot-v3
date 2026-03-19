@@ -1,9 +1,11 @@
 """
 gpu_utils.py — Multi-GPU utilities for OpenShift AI / CUDA clusters.
 
-Version : 4.2.1
+Version : 4.2.3
 Modified: 2026-03-19
-Changes : v4.2.1 — Remove DataParallel completely, DDP-only for multi-GPU
+Changes : v4.2.3 — Pass device_id to init_process_group, suppress DDP device warnings
+          v4.2.2 — unwrap_model handles torch.compile (OptimizedModule) wrappers
+          v4.2.1 — Remove DataParallel completely, DDP-only for multi-GPU
           v4.1.1 — Remove prefer_gpu, add max_gpus param + CPU-only mode (--gpus 0)
           v4.1.0 — Add max_gpus parameter to setup_device for CLI --gpus support
           v4.0.0 — Version bump for multi-corpus project
@@ -88,8 +90,9 @@ def setup_device(max_gpus: Optional[int] = None) -> Tuple[torch.device, GPUInfo]
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-        torch.distributed.init_process_group(backend="nccl")
         torch.cuda.set_device(local_rank)
+        torch.distributed.init_process_group(backend="nccl",
+                                             device_id=torch.device(f"cuda:{local_rank}"))
 
         device = torch.device(f"cuda:{local_rank}")
         info.device = device
@@ -236,14 +239,16 @@ def wrap_model(model: nn.Module, gpu_info: GPUInfo) -> nn.Module:
 
 def unwrap_model(model: nn.Module) -> nn.Module:
     """
-    Get the underlying model from a DDP wrapper.
+    Get the underlying model from DDP and/or torch.compile wrappers.
 
     Safe to call on non-wrapped models (returns as-is).
     Use this whenever you need to access model internals (encoder, decoder, etc.)
     for inference, checkpoint saving, or attention visualization.
     """
     if isinstance(model, DDP):
-        return model.module
+        model = model.module
+    if hasattr(model, "_orig_mod"):          # torch.compile wrapper
+        model = model._orig_mod
     return model
 
 
