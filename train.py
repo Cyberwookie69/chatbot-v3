@@ -1,9 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.1
+Version : 4.2.2
 Modified: 2026-03-19
-Changes : v4.2.1 — --gpus N auto-launches DDP via torchrun, removed DataParallel
+Changes : v4.2.2 — Code cleanup: remove dead _is_dp variable, fix comments
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -385,13 +385,12 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
       {checkpoint_dir}/{model_type}_history.json — training history
 
     Args:
-        gpu_info: GPUInfo from gpu_utils.setup_device(). If provided and num_gpus > 1,
-                  the model is wrapped in DataParallel for multi-GPU training.
+        gpu_info: GPUInfo from gpu_utils.setup_device(). If provided and use_ddp,
+                  the model is wrapped in DDP for multi-GPU training.
 
     Returns:
         List of per-epoch history dicts.
     """
-    # Stash model_type in config so train_epoch can name periodic checkpoints.
     config = dict(config)
     config["_model_type"] = model_type
 
@@ -416,7 +415,6 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
         print(f"\n[{model_type}] Trainable parameters: {num_params:,}")
 
     # ── 2b. torch.compile (before DDP wrapping — PyTorch recommended order) ──
-    _is_dp = False
     if hasattr(torch, "compile") and device.type == "cuda":
         try:
             model = torch.compile(model)
@@ -426,10 +424,9 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
             if _is_main:
                 print(f"[{model_type}] torch.compile skipped: {e}")
 
-    # ── 2c. Multi-GPU wrapping (DDP or DataParallel) ─────────────────────────
+    # ── 2c. DDP wrapping ─────────────────────────────────────────────────────
     if gpu_info is not None:
         model = wrap_model(model, gpu_info)
-        _is_dp = isinstance(model, nn.DataParallel)
 
     # ── 3. Optimizer + scheduler ──────────────────────────────────────────────
     # total_steps must be computed AFTER building the dataloader so we know

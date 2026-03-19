@@ -66,7 +66,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
