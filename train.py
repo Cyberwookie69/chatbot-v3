@@ -375,17 +375,19 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n[{model_type}] Trainable parameters: {num_params:,}")
 
-    # ── 2b. Multi-GPU wrapping ────────────────────────────────────────────────
-    if gpu_info is not None:
-        model = wrap_model(model, gpu_info)
-
-    # ── 2c. torch.compile for kernel fusion speedup ──────────────────────────
+    # ── 2b. torch.compile for kernel fusion speedup ──────────────────────────
+    # Must run BEFORE DataParallel wrapping to avoid "Inplace update to
+    # inference tensor" errors when LSTM.flatten_parameters() runs on replicas.
     if hasattr(torch, "compile") and device.type == "cuda":
         try:
             model = torch.compile(model)
             print(f"[{model_type}] torch.compile enabled")
         except Exception as e:
             print(f"[{model_type}] torch.compile skipped: {e}")
+
+    # ── 2c. Multi-GPU wrapping ────────────────────────────────────────────────
+    if gpu_info is not None:
+        model = wrap_model(model, gpu_info)
 
     # ── 3. Optimizer + scheduler ──────────────────────────────────────────────
     # total_steps must be computed AFTER building the dataloader so we know
