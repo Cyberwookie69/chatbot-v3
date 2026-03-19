@@ -1,9 +1,10 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.1.4
+Version : 4.2.0
 Modified: 2026-03-19
-Changes : v4.1.4 — Fix torch.compile check: enable on single-GPU (was wrongly skipped)
+Changes : v4.2.0 — Migrate to DistributedDataParallel (DDP) for multi-GPU training,
+                    rank-gated logging/checkpoints/TensorBoard, DDP val loss allreduce
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -70,7 +71,8 @@ from torch.utils.tensorboard import SummaryWriter
 from config import CONFIG, get_tf_ratio, set_seed
 from dataset import build_dataloaders
 from models import build_model
-from gpu_utils import setup_device, auto_scale_config, wrap_model, unwrap_model
+from gpu_utils import (setup_device, auto_scale_config, wrap_model, unwrap_model,
+                       is_main_process, cleanup_ddp, GPUInfo)
 
 # bf16 does not underflow like fp16 — GradScaler is not needed.
 # torch.amp.autocast with dtype=torch.bfloat16 is sufficient.
@@ -84,9 +86,11 @@ def train_epoch(
     config: dict,
     device: torch.device,
     epoch: int,
-    writer: SummaryWriter,
+    writer,
     global_step: int,
     scheduler,
+    gpu_info: GPUInfo = None,
+    train_sampler=None,
 ) -> Tuple[float, float, int]:
     """
     One training epoch with bf16 AMP and gradient accumulation.
@@ -103,6 +107,11 @@ def train_epoch(
         - Periodic checkpoint written every 2000 optimizer steps (atomic).
     """
     model.train()
+    _is_main = gpu_info is None or is_main_process(gpu_info)
+
+    # DDP: set sampler epoch for proper shuffling
+    if train_sampler is not None:
+        train_sampler.set_epoch(epoch)
 
     vocab_size: int = config["vocab_size"]
     grad_accum_steps: int = config["grad_accum_steps"]
@@ -126,6 +135,7 @@ def train_epoch(
         desc=f"  Epoch {epoch:3d} train",
         dynamic_ncols=True,
         unit="batch",
+        disable=not _is_main,
     )
 
     optimizer.zero_grad(set_to_none=True)
@@ -191,13 +201,14 @@ def train_epoch(
             total_grad_norm += grad_norm
             n_updates += 1
 
-            # ── TensorBoard step-level logging ──────────────────────────────
-            writer.add_scalar("train/loss_step", loss.item(), global_step)
-            writer.add_scalar("train/grad_norm_step", grad_norm, global_step)
-            writer.add_scalar("train/lr_step", optimizer.param_groups[0]["lr"], global_step)
+            # ── TensorBoard step-level logging (rank 0 only) ────────────────
+            if _is_main and writer is not None:
+                writer.add_scalar("train/loss_step", loss.item(), global_step)
+                writer.add_scalar("train/grad_norm_step", grad_norm, global_step)
+                writer.add_scalar("train/lr_step", optimizer.param_groups[0]["lr"], global_step)
 
-            # ── Periodic checkpoint (atomic: write .tmp then os.replace) ────
-            if global_step % periodic_ckpt_steps == 0:
+            # ── Periodic checkpoint (rank 0 only, atomic) ─────────────────
+            if _is_main and global_step % periodic_ckpt_steps == 0:
                 ckpt_path = os.path.join(
                     checkpoint_dir,
                     f"{config.get('_model_type', 'model')}_step_{global_step}.pt",
@@ -234,6 +245,7 @@ def evaluate_epoch(
     criterion: nn.Module,
     device: torch.device,
     amp_dtype: torch.dtype = torch.bfloat16,
+    gpu_info: GPUInfo = None,
 ) -> Tuple[float, float]:
     """
     Validation pass — teacher forcing is DISABLED (ratio=0.0).
@@ -249,19 +261,20 @@ def evaluate_epoch(
         (avg_val_loss, val_ppl) where val_ppl = exp(min(avg_val_loss, 20)).
     """
     model.eval()
+    _is_main = gpu_info is None or is_main_process(gpu_info)
+    _use_ddp = gpu_info is not None and gpu_info.use_ddp
 
     total_loss = 0.0
     n_batches = 0
     nan_batches = 0
 
     with torch.no_grad():
-        for batch in tqdm(loader, desc="  val", unit="batch", dynamic_ncols=True, leave=False):
+        for batch in tqdm(loader, desc="  val", unit="batch", dynamic_ncols=True,
+                          leave=False, disable=not _is_main):
             src: torch.Tensor = batch["src"].to(device)
             src_lengths: torch.Tensor = batch["src_lengths"].to(device)
             trg: torch.Tensor = batch["trg"].to(device)
 
-            # Pass teacher_forcing_ratio=0.0 so the decoder uses its own predictions,
-            # not gold tokens.  trg still determines how many decode steps to run.
             _device_type = device.type if hasattr(device, "type") else str(device).split(":")[0]
             with torch.amp.autocast(device_type=_device_type, dtype=amp_dtype,
                                     enabled=_device_type == "cuda"):
@@ -270,7 +283,7 @@ def evaluate_epoch(
             vocab_size: int = output.size(-1)
             loss = criterion(
                 output.reshape(-1, vocab_size),
-                trg[:, 1:].reshape(-1),   # exclude <sos>; criterion ignores <pad>
+                trg[:, 1:].reshape(-1),
             )
 
             if torch.isfinite(loss):
@@ -279,11 +292,18 @@ def evaluate_epoch(
             else:
                 nan_batches += 1
 
-    if nan_batches > 0:
+    # DDP: aggregate val loss across all ranks
+    if _use_ddp:
+        stats = torch.tensor([total_loss, float(n_batches), float(nan_batches)], device=device)
+        torch.distributed.all_reduce(stats, op=torch.distributed.ReduceOp.SUM)
+        total_loss = stats[0].item()
+        n_batches = int(stats[1].item())
+        nan_batches = int(stats[2].item())
+
+    if nan_batches > 0 and _is_main:
         print(f"  ⚠ val: {nan_batches} NaN/Inf batches out of {n_batches + nan_batches}")
 
     avg_val_loss = total_loss / max(n_batches, 1)
-    # Cap inside exp() to avoid overflow on very early / diverged runs.
     val_ppl = math.exp(min(avg_val_loss, 20))
 
     model.train()
@@ -376,9 +396,10 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
     config = dict(config)
     config["_model_type"] = model_type
 
+    _is_main = gpu_info is None or is_main_process(gpu_info)
+
     # ── 1. Data ──────────────────────────────────────────────────────────────
-    # FIX M6 — exact call as specified in INTERFACES.md §4
-    train_loader, val_loader, _ = build_dataloaders(
+    train_loader, val_loader, _, train_sampler = build_dataloaders(
         artifact_dir=config["artifact_dir"],
         batch_size=config["batch_size"],
         num_workers=config["num_workers"],
@@ -386,29 +407,30 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
         max_resp_len=config["max_resp_tokens"] + 2,   # +2 for <sos> and <eos>
         pad_idx=config["pad_idx"],
         max_train_samples=config.get("max_train_samples", 0),
+        gpu_info=gpu_info,
     )
 
     # ── 2. Model ─────────────────────────────────────────────────────────────
     model = build_model(model_type, config, device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"\n[{model_type}] Trainable parameters: {num_params:,}")
+    if _is_main:
+        print(f"\n[{model_type}] Trainable parameters: {num_params:,}")
 
-    # ── 2b. Multi-GPU wrapping ────────────────────────────────────────────────
-    if gpu_info is not None:
-        model = wrap_model(model, gpu_info)
-
-    # ── 2c. torch.compile for kernel fusion speedup ──────────────────────────
-    # torch.compile is incompatible with DataParallel (compiled model hides
-    # submodule attributes like .encoder from DP's replication logic).
-    _is_dp = isinstance(model, nn.DataParallel)
-    if hasattr(torch, "compile") and device.type == "cuda" and not _is_dp:
+    # ── 2b. torch.compile (before DDP wrapping — PyTorch recommended order) ──
+    _is_dp = False
+    if hasattr(torch, "compile") and device.type == "cuda":
         try:
             model = torch.compile(model)
-            print(f"[{model_type}] torch.compile enabled")
+            if _is_main:
+                print(f"[{model_type}] torch.compile enabled")
         except Exception as e:
-            print(f"[{model_type}] torch.compile skipped: {e}")
-    elif _is_dp:
-        print(f"[{model_type}] torch.compile skipped (incompatible with DataParallel)")
+            if _is_main:
+                print(f"[{model_type}] torch.compile skipped: {e}")
+
+    # ── 2c. Multi-GPU wrapping (DDP or DataParallel) ─────────────────────────
+    if gpu_info is not None:
+        model = wrap_model(model, gpu_info)
+        _is_dp = isinstance(model, nn.DataParallel)
 
     # ── 3. Optimizer + scheduler ──────────────────────────────────────────────
     # total_steps must be computed AFTER building the dataloader so we know
@@ -425,9 +447,11 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
     )
     _amp_dtype = getattr(torch, config.get("amp_dtype", "bfloat16"))   # read from config
 
-    # ── 5. TensorBoard ────────────────────────────────────────────────────────
-    tb_dir = os.path.join(config["tensorboard_dir"], model_type)
-    writer = SummaryWriter(log_dir=tb_dir)
+    # ── 5. TensorBoard (rank 0 only) ────────────────────────────────────────
+    writer = None
+    if _is_main:
+        tb_dir = os.path.join(config["tensorboard_dir"], model_type)
+        writer = SummaryWriter(log_dir=tb_dir)
 
     # ── 6. Resume — prefer last-epoch checkpoint to avoid re-running epochs ──
     checkpoint_dir = config["checkpoint_dir"]
@@ -488,6 +512,8 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
             writer=writer,
             global_step=global_step,
             scheduler=scheduler,
+            gpu_info=gpu_info,
+            train_sampler=train_sampler,
         )
 
         # 7c. Validate.
@@ -497,6 +523,7 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
             criterion=criterion,
             device=device,
             amp_dtype=_amp_dtype,
+            gpu_info=gpu_info,
         )
 
         # 7d. LR is now stepped per optimizer step inside train_epoch();
@@ -504,47 +531,45 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
         elapsed = time.time() - epoch_start
         lr: float = optimizer.param_groups[0]["lr"]
 
-        # 7e. TensorBoard epoch-level logging.
-        writer.add_scalar("val/loss", val_loss, epoch)
-        writer.add_scalar("val/ppl", val_ppl, epoch)
-        writer.add_scalar("train/loss_epoch", train_loss, epoch)
-        writer.add_scalar("learning_rate", lr, epoch)
-        writer.add_scalar("tf_ratio", tf_ratio, epoch)
+        # 7e. TensorBoard epoch-level logging (rank 0 only).
+        if _is_main and writer is not None:
+            writer.add_scalar("val/loss", val_loss, epoch)
+            writer.add_scalar("val/ppl", val_ppl, epoch)
+            writer.add_scalar("train/loss_epoch", train_loss, epoch)
+            writer.add_scalar("learning_rate", lr, epoch)
+            writer.add_scalar("tf_ratio", tf_ratio, epoch)
 
-        # 7f. Save best checkpoint (atomic: write .tmp then os.replace).
-        # Capture improvement BEFORE updating best_val_loss so early stopping
-        # can use the same flag (avoids off-by-one: after the update,
-        # val_loss == best_val_loss which would look like "no improvement").
+        # 7f. Save best checkpoint (rank 0 only, atomic).
         _improved = val_loss < best_val_loss
         if _improved:
             best_val_loss = val_loss
-            # AC2-C2: include run provenance in every best checkpoint.
-            try:
-                _git = subprocess.check_output(
-                    ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
-                ).decode().strip()
-            except Exception:
-                _git = "unknown"
-            ckpt_data = {
-                "epoch": epoch,
-                "global_step": global_step,
-                "model_type": model_type,
-                "model_state_dict": unwrap_model(model).state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "scheduler_state": scheduler.state_dict(),
-                "val_loss": val_loss,
-                "val_ppl": val_ppl,
-                "train_loss": train_loss,
-                "tf_ratio": tf_ratio,
-                "config": dict(config),
-                "history": history,
-                "git_hash": _git,
-                "torch_version": torch.__version__,
-                "run_timestamp": time.strftime("%Y%m%d_%H%M%S"),
-            }
-            tmp_path = best_ckpt_path + ".tmp"
-            torch.save(ckpt_data, tmp_path)
-            os.replace(tmp_path, best_ckpt_path)
+            if _is_main:
+                try:
+                    _git = subprocess.check_output(
+                        ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+                    ).decode().strip()
+                except Exception:
+                    _git = "unknown"
+                ckpt_data = {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "model_type": model_type,
+                    "model_state_dict": unwrap_model(model).state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "val_loss": val_loss,
+                    "val_ppl": val_ppl,
+                    "train_loss": train_loss,
+                    "tf_ratio": tf_ratio,
+                    "config": dict(config),
+                    "history": history,
+                    "git_hash": _git,
+                    "torch_version": torch.__version__,
+                    "run_timestamp": time.strftime("%Y%m%d_%H%M%S"),
+                }
+                tmp_path = best_ckpt_path + ".tmp"
+                torch.save(ckpt_data, tmp_path)
+                os.replace(tmp_path, best_ckpt_path)
 
         # 7g. Update history.
         history["train_loss"].append(train_loss)
@@ -562,43 +587,45 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
             else:
                 _no_improve += 1
                 if _no_improve >= _patience:
-                    print(f"[{model_type}] Early stopping at epoch {epoch} "
-                          f"(no improvement for {_patience} epochs)")
-                    # Save last checkpoint before breaking.
-                    last_ckpt_data = {
-                        "epoch": epoch,
-                        "global_step": global_step,
-                        "model_type": model_type,
-                        "model_state_dict": unwrap_model(model).state_dict(),
-                        "optimizer_state": optimizer.state_dict(),
-                        "scheduler_state": scheduler.state_dict(),
-                        "val_loss": val_loss,
-                        "config": dict(config),
-                        "history": history,
-                    }
-                    tmp_last = last_ckpt_path + ".tmp"
-                    torch.save(last_ckpt_data, tmp_last)
-                    os.replace(tmp_last, last_ckpt_path)
+                    if _is_main:
+                        print(f"[{model_type}] Early stopping at epoch {epoch} "
+                              f"(no improvement for {_patience} epochs)")
+                        last_ckpt_data = {
+                            "epoch": epoch,
+                            "global_step": global_step,
+                            "model_type": model_type,
+                            "model_state_dict": unwrap_model(model).state_dict(),
+                            "optimizer_state": optimizer.state_dict(),
+                            "scheduler_state": scheduler.state_dict(),
+                            "val_loss": val_loss,
+                            "config": dict(config),
+                            "history": history,
+                        }
+                        tmp_last = last_ckpt_path + ".tmp"
+                        torch.save(last_ckpt_data, tmp_last)
+                        os.replace(tmp_last, last_ckpt_path)
                     break
 
-        # 7g2. Save last-epoch checkpoint (for Colab resume — prefers this over best).
-        last_ckpt_data = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "model_type": model_type,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "scheduler_state": scheduler.state_dict(),
-            "val_loss": val_loss,
-            "config": dict(config),
-            "history": history,
-        }
-        tmp_last = last_ckpt_path + ".tmp"
-        torch.save(last_ckpt_data, tmp_last)
-        os.replace(tmp_last, last_ckpt_path)
+        # 7g2. Save last-epoch checkpoint (rank 0 only).
+        if _is_main:
+            last_ckpt_data = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "model_type": model_type,
+                "model_state_dict": unwrap_model(model).state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "val_loss": val_loss,
+                "config": dict(config),
+                "history": history,
+            }
+            tmp_last = last_ckpt_path + ".tmp"
+            torch.save(last_ckpt_data, tmp_last)
+            os.replace(tmp_last, last_ckpt_path)
 
-        # 7h. Epoch summary.
-        print(
+        # 7h. Epoch summary (rank 0 only).
+        if _is_main:
+            print(
             f"Epoch {epoch:3d}/{num_epochs} | "
             f"Train: {train_loss:.4f} | "
             f"Val: {val_loss:.4f} | "
@@ -609,15 +636,17 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
             f"{elapsed:.1f}s"
         )
 
-    writer.close()
+    if _is_main and writer is not None:
+        writer.close()
 
-    # ── 8. Save history JSON (atomic write) ─────────────────────────────────
-    history_path = os.path.join(checkpoint_dir, f"{model_type}_history.json")
-    _tmp_hist = history_path + ".tmp"
-    with open(_tmp_hist, "w") as fh:
-        json.dump(history, fh, indent=2)
-    os.replace(_tmp_hist, history_path)
-    print(f"[{model_type}] History saved to {history_path}")
+    # ── 8. Save history JSON (rank 0 only, atomic write) ─────────────────
+    if _is_main:
+        history_path = os.path.join(checkpoint_dir, f"{model_type}_history.json")
+        _tmp_hist = history_path + ".tmp"
+        with open(_tmp_hist, "w") as fh:
+            json.dump(history, fh, indent=2)
+        os.replace(_tmp_hist, history_path)
+        print(f"[{model_type}] History saved to {history_path}")
 
     return history
 
@@ -631,9 +660,7 @@ def main(cfg: dict = None, script_name: str = "train",
         script_name: Used for the run log filename (e.g. "train_mini").
         cli_args:    Parsed command-line arguments (--gpus, --gpu-id, etc.).
     """
-    from logging_utils import setup_run_logging
     active_cfg = cfg if cfg is not None else CONFIG
-    setup_run_logging(script_name, log_dir=active_cfg.get("log_dir", "new/logs"))
 
     # AC2-C1: set all random seeds for full reproducibility.
     set_seed(active_cfg.get("seed", 42))
@@ -647,94 +674,109 @@ def main(cfg: dict = None, script_name: str = "train",
     if cli_args and cli_args.cpus is not None:
         torch.set_num_threads(cli_args.cpus)
         torch.set_num_interop_threads(max(1, cli_args.cpus // 2))
-        print(f"[cli] CPU cores capped → {cli_args.cpus} "
-              f"(threads={cli_args.cpus}, interop={max(1, cli_args.cpus // 2)})")
 
     device, gpu_info = setup_device(
         max_gpus=cli_args.gpus if cli_args else None,
     )
+    _is_main = is_main_process(gpu_info)
     active_cfg = auto_scale_config(active_cfg, gpu_info)
 
     # CLI overrides for batch size and workers (after auto_scale so they take priority)
     if cli_args and cli_args.batch_size is not None:
         active_cfg["batch_size"] = cli_args.batch_size
-        print(f"[cli] batch_size overridden → {cli_args.batch_size}")
+        if _is_main:
+            print(f"[cli] batch_size overridden → {cli_args.batch_size}")
     if cli_args and cli_args.workers is not None:
         active_cfg["num_workers"] = cli_args.workers
-        print(f"[cli] num_workers overridden → {cli_args.workers}")
+        if _is_main:
+            print(f"[cli] num_workers overridden → {cli_args.workers}")
     elif cli_args and cli_args.cpus is not None:
-        # Cap workers to CPU count if not explicitly set
         max_workers = min(active_cfg.get("num_workers", 8), cli_args.cpus)
         active_cfg["num_workers"] = max_workers
-        print(f"[cli] num_workers capped to CPU count → {max_workers}")
-    print(f"Device: {device}")
+        if _is_main:
+            print(f"[cli] CPU cores={cli_args.cpus}, num_workers={max_workers}")
+    if _is_main:
+        print(f"Device: {device}")
 
-    # ── Clean checkpoints if requested ──────────────────────────────────────
+    # ── Logging and clean (rank 0 only) ──────────────────────────────────────
     ckpt_dir = active_cfg["checkpoint_dir"]
     tb_dir_root = active_cfg["tensorboard_dir"]
-    if cli_args and cli_args.clean:
-        import glob as _glob
-        removed = 0
-        for pattern in [
-            os.path.join(ckpt_dir, "*.pt"),
-            os.path.join(ckpt_dir, "*.pt.tmp"),
-            os.path.join(ckpt_dir, "*_history.json"),
-            os.path.join(ckpt_dir, "run_info.json"),
-        ]:
-            for f in _glob.glob(pattern):
-                os.remove(f)
-                removed += 1
-        # Clear TensorBoard logs
-        for tb_sub in ["baseline", "attention"]:
-            tb_path = os.path.join(tb_dir_root, tb_sub)
-            if os.path.isdir(tb_path):
-                import shutil
-                shutil.rmtree(tb_path)
-                removed += 1
-        print(f"[clean] Removed {removed} checkpoint/log files — fresh start")
 
-    os.makedirs(ckpt_dir, exist_ok=True)
-    os.makedirs(tb_dir_root, exist_ok=True)
+    if _is_main:
+        from logging_utils import setup_run_logging
+        setup_run_logging(script_name, log_dir=active_cfg.get("log_dir", "new/logs"))
 
-    # AC2-C2: log environment metadata (git hash, versions, timestamp).
-    try:
-        git_hash = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
-        ).decode().strip()
-    except Exception:
-        git_hash = "unknown"
-    run_info = {
-        "git_hash":       git_hash,
-        "python_version": sys.version,
-        "torch_version":  torch.__version__,
-        "cuda_version":   torch.version.cuda or "cpu",
-        "run_timestamp":  time.strftime("%Y%m%d_%H%M%S"),
-        "seed":           active_cfg.get("seed", 42),
-        "device":         str(device),
-    }
-    run_info_path = os.path.join(active_cfg["checkpoint_dir"], "run_info.json")
-    with open(run_info_path, "w") as fh:
-        json.dump(run_info, fh, indent=2)
-    print(f"Run info saved → {run_info_path}")
-    print(f"  git: {git_hash}  |  torch: {torch.__version__}  |  seed: {run_info['seed']}")
+        if cli_args and cli_args.clean:
+            import glob as _glob
+            removed = 0
+            for pattern in [
+                os.path.join(ckpt_dir, "*.pt"),
+                os.path.join(ckpt_dir, "*.pt.tmp"),
+                os.path.join(ckpt_dir, "*_history.json"),
+                os.path.join(ckpt_dir, "run_info.json"),
+            ]:
+                for f in _glob.glob(pattern):
+                    os.remove(f)
+                    removed += 1
+            for tb_sub in ["baseline", "attention"]:
+                tb_path = os.path.join(tb_dir_root, tb_sub)
+                if os.path.isdir(tb_path):
+                    import shutil
+                    shutil.rmtree(tb_path)
+                    removed += 1
+            print(f"[clean] Removed {removed} checkpoint/log files — fresh start")
+
+        os.makedirs(ckpt_dir, exist_ok=True)
+        os.makedirs(tb_dir_root, exist_ok=True)
+
+        try:
+            git_hash = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except Exception:
+            git_hash = "unknown"
+        run_info = {
+            "git_hash":       git_hash,
+            "python_version": sys.version,
+            "torch_version":  torch.__version__,
+            "cuda_version":   torch.version.cuda or "cpu",
+            "run_timestamp":  time.strftime("%Y%m%d_%H%M%S"),
+            "seed":           active_cfg.get("seed", 42),
+            "device":         str(device),
+            "ddp":            gpu_info.use_ddp,
+            "world_size":     gpu_info.world_size,
+        }
+        run_info_path = os.path.join(ckpt_dir, "run_info.json")
+        with open(run_info_path, "w") as fh:
+            json.dump(run_info, fh, indent=2)
+        print(f"Run info saved → {run_info_path}")
+        print(f"  git: {git_hash}  |  torch: {torch.__version__}  |  seed: {run_info['seed']}")
+
+    # DDP barrier: ensure rank 0 has created dirs before other ranks proceed
+    if gpu_info.use_ddp:
+        torch.distributed.barrier()
 
     # ── Baseline ─────────────────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("  TRAINING: baseline (no attention)")
-    print("=" * 70)
+    if _is_main:
+        print("\n" + "=" * 70)
+        print("  TRAINING: baseline (no attention)")
+        print("=" * 70)
     baseline_history = train_model("baseline", active_cfg, device, gpu_info)
 
-    # ── Separator ────────────────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("  TRAINING: attention (Bahdanau)")
-    print("=" * 70)
-
     # ── Attention ─────────────────────────────────────────────────────────────
+    if _is_main:
+        print("\n" + "=" * 70)
+        print("  TRAINING: attention (Bahdanau)")
+        print("=" * 70)
     attention_history = train_model("attention", active_cfg, device, gpu_info)
 
-    print("\nTraining complete.")
-    print(f"  Baseline  best val loss : {min(baseline_history['val_loss']):.4f}")
-    print(f"  Attention best val loss : {min(attention_history['val_loss']):.4f}")
+    if _is_main:
+        print("\nTraining complete.")
+        print(f"  Baseline  best val loss : {min(baseline_history['val_loss']):.4f}")
+        print(f"  Attention best val loss : {min(attention_history['val_loss']):.4f}")
+
+    # ── DDP cleanup ──────────────────────────────────────────────────────────
+    cleanup_ddp()
 
 
 def parse_args() -> argparse.Namespace:
