@@ -1,9 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.2.2
+Version : 4.2.3
 Modified: 2026-03-19
-Changes : v4.2.2 — Code cleanup: remove dead _is_dp variable, fix comments
+Changes : v4.2.3 — DRY: extract _save_checkpoint/_make_checkpoint helpers, deduplicate
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -75,6 +75,33 @@ from gpu_utils import (setup_device, auto_scale_config, wrap_model, unwrap_model
 
 # bf16 does not underflow like fp16 — GradScaler is not needed.
 # torch.amp.autocast with dtype=torch.bfloat16 is sufficient.
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _save_checkpoint(data: dict, path: str) -> None:
+    """Atomically save a checkpoint (write .tmp then rename)."""
+    tmp = path + ".tmp"
+    torch.save(data, tmp)
+    os.replace(tmp, path)
+
+
+def _make_checkpoint(epoch, global_step, model, model_type, optimizer, scheduler,
+                     val_loss, config, history, **extra) -> dict:
+    """Build checkpoint dict with common fields. Extra keys via kwargs."""
+    ckpt = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "model_type": model_type,
+        "model_state_dict": unwrap_model(model).state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "val_loss": val_loss,
+        "config": dict(config),
+        "history": history,
+    }
+    ckpt.update(extra)
+    return ckpt
 
 
 def train_epoch(
@@ -212,20 +239,14 @@ def train_epoch(
                     checkpoint_dir,
                     f"{config.get('_model_type', 'model')}_step_{global_step}.pt",
                 )
-                tmp_path = ckpt_path + ".tmp"
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "global_step": global_step,
-                        "model_state_dict": unwrap_model(model).state_dict(),
-                        "optimizer_state": optimizer.state_dict(),
-                        "scheduler_state": scheduler.state_dict(),
-                        "train_loss_so_far": total_loss / max(n_updates, 1),
-                        "tf_ratio": tf_ratio,
-                    },
-                    tmp_path,
-                )
-                os.replace(tmp_path, ckpt_path)
+                _save_checkpoint({
+                    "epoch": epoch, "global_step": global_step,
+                    "model_state_dict": unwrap_model(model).state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "train_loss_so_far": total_loss / max(n_updates, 1),
+                    "tf_ratio": tf_ratio,
+                }, ckpt_path)
 
             pbar.set_postfix(
                 loss=f"{loss.item():.4f}",
@@ -546,32 +567,19 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
                     ).decode().strip()
                 except Exception:
                     _git = "unknown"
-                ckpt_data = {
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "model_type": model_type,
-                    "model_state_dict": unwrap_model(model).state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "scheduler_state": scheduler.state_dict(),
-                    "val_loss": val_loss,
-                    "val_ppl": val_ppl,
-                    "train_loss": train_loss,
-                    "tf_ratio": tf_ratio,
-                    "config": dict(config),
-                    "history": history,
-                    "git_hash": _git,
-                    "torch_version": torch.__version__,
-                    "run_timestamp": time.strftime("%Y%m%d_%H%M%S"),
-                }
-                tmp_path = best_ckpt_path + ".tmp"
-                torch.save(ckpt_data, tmp_path)
-                os.replace(tmp_path, best_ckpt_path)
+                ckpt = _make_checkpoint(
+                    epoch, global_step, model, model_type, optimizer, scheduler,
+                    val_loss, config, history,
+                    val_ppl=val_ppl, train_loss=train_loss, tf_ratio=tf_ratio,
+                    git_hash=_git, torch_version=torch.__version__,
+                    run_timestamp=time.strftime("%Y%m%d_%H%M%S"),
+                )
+                _save_checkpoint(ckpt, best_ckpt_path)
 
         # 7g. Update history.
-        history["train_loss"].append(train_loss)
-        history["val_loss"].append(val_loss)
-        history["tf_ratios"].append(tf_ratio)
-        history["lrs"].append(lr)
+        for key, val in [("train_loss", train_loss), ("val_loss", val_loss),
+                         ("tf_ratios", tf_ratio), ("lrs", lr)]:
+            history[key].append(val)
 
         # Early stopping — only monitored from Phase 2 onward.
         # During Phase 1 (TF=1.0), autoregressive val loss is not meaningful
@@ -586,38 +594,18 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
                     if _is_main:
                         print(f"[{model_type}] Early stopping at epoch {epoch} "
                               f"(no improvement for {_patience} epochs)")
-                        last_ckpt_data = {
-                            "epoch": epoch,
-                            "global_step": global_step,
-                            "model_type": model_type,
-                            "model_state_dict": unwrap_model(model).state_dict(),
-                            "optimizer_state": optimizer.state_dict(),
-                            "scheduler_state": scheduler.state_dict(),
-                            "val_loss": val_loss,
-                            "config": dict(config),
-                            "history": history,
-                        }
-                        tmp_last = last_ckpt_path + ".tmp"
-                        torch.save(last_ckpt_data, tmp_last)
-                        os.replace(tmp_last, last_ckpt_path)
+                        _save_checkpoint(
+                            _make_checkpoint(epoch, global_step, model, model_type,
+                                             optimizer, scheduler, val_loss, config, history),
+                            last_ckpt_path)
                     break
 
         # 7g2. Save last-epoch checkpoint (rank 0 only).
         if _is_main:
-            last_ckpt_data = {
-                "epoch": epoch,
-                "global_step": global_step,
-                "model_type": model_type,
-                "model_state_dict": unwrap_model(model).state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "scheduler_state": scheduler.state_dict(),
-                "val_loss": val_loss,
-                "config": dict(config),
-                "history": history,
-            }
-            tmp_last = last_ckpt_path + ".tmp"
-            torch.save(last_ckpt_data, tmp_last)
-            os.replace(tmp_last, last_ckpt_path)
+            _save_checkpoint(
+                _make_checkpoint(epoch, global_step, model, model_type,
+                                 optimizer, scheduler, val_loss, config, history),
+                last_ckpt_path)
 
         # 7h. Epoch summary (rank 0 only).
         if _is_main:

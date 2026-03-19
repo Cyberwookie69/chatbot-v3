@@ -329,7 +329,7 @@ _COHERENCE_STOPWORDS = frozenset({
     "here", "does", "like", "very", "even", "most", "over", "only", "same",
     "each", "make", "much", "come", "want", "need", "know", "think", "look",
     "time", "back", "after", "where", "while", "through", "however", "because",
-    "these", "those", "other", "them", "been", "were", "have", "will", "shall",
+    "these", "those", "other", "them", "were", "shall",
     "still", "again", "being", "going", "doing", "using", "something", "anything",
 })
 
