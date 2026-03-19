@@ -1,9 +1,9 @@
 """
 train.py — Training loop for clean-from-scratch Seq2Seq chatbot.
 
-Version : 4.1.3
+Version : 4.1.4
 Modified: 2026-03-19
-Changes : v4.1.3 — Add --clean flag to remove checkpoints before training (fresh start)
+Changes : v4.1.4 — Fix torch.compile check: enable on single-GPU (was wrongly skipped)
           v4.1.1 — Replace --gpu-id with --cpus for CPU core/thread control
           v4.1.0 — Add CLI args (--gpus, --cpus, --workers, --batch-size, --epochs)
           v4.0.3 — Fix DataParallel validation: no_grad instead of inference_mode
@@ -400,14 +400,14 @@ def train_model(model_type: str, config: dict, device: torch.device, gpu_info=No
     # ── 2c. torch.compile for kernel fusion speedup ──────────────────────────
     # torch.compile is incompatible with DataParallel (compiled model hides
     # submodule attributes like .encoder from DP's replication logic).
-    # Only enable on single-GPU setups.
-    if hasattr(torch, "compile") and device.type == "cuda" and gpu_info is None:
+    _is_dp = isinstance(model, nn.DataParallel)
+    if hasattr(torch, "compile") and device.type == "cuda" and not _is_dp:
         try:
             model = torch.compile(model)
             print(f"[{model_type}] torch.compile enabled")
         except Exception as e:
             print(f"[{model_type}] torch.compile skipped: {e}")
-    elif gpu_info is not None:
+    elif _is_dp:
         print(f"[{model_type}] torch.compile skipped (incompatible with DataParallel)")
 
     # ── 3. Optimizer + scheduler ──────────────────────────────────────────────
